@@ -21,7 +21,15 @@ interface Progress {
   completed: boolean;
 }
 
+interface ActivityLogEntry {
+  id: string;
+  type: 'auth' | 'section' | 'module_completed' | 'training_completed';
+  message: string;
+  timestamp: number;
+}
+
 const STORAGE_KEY = 'echo_progress';
+const LOG_KEY = 'echo_activity_log';
 
 // ---------------------------------------------------------------------------
 // Token system (CSS variables set once on the root wrapper)
@@ -145,6 +153,116 @@ function FilmStripProgress({ total, current }: { total: number; current: number 
   );
 }
 
+// ---------------------------------------------------------------------------
+// Activity log — a script supervisor's log sheet. Every auth, section
+// advance, module wrap, and training completion is timestamped here.
+// ---------------------------------------------------------------------------
+const LOG_DOT: Record<ActivityLogEntry['type'], string> = {
+  auth: 'var(--rule)',
+  section: 'var(--amber)',
+  module_completed: 'var(--ember)',
+  training_completed: 'var(--ember)',
+};
+
+function formatTimestamp(ts: number) {
+  const d = new Date(ts);
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function ActivityLogPanel({
+  log,
+  loading,
+  syncError,
+  onClose,
+}: {
+  log: ActivityLogEntry[];
+  loading: boolean;
+  syncError: string;
+  onClose: () => void;
+}) {
+  const sorted = [...log].sort((a, b) => b.timestamp - a.timestamp);
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex justify-end"
+      style={{ backgroundColor: 'rgba(14,13,12,0.7)' }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ x: 24, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 24, opacity: 0 }}
+        transition={{ duration: 0.25 }}
+        onClick={(e) => e.stopPropagation()}
+        className="h-full w-full max-w-md p-8 overflow-y-auto"
+        style={{ backgroundColor: 'var(--panel)', borderLeft: '1px solid var(--rule)' }}
+      >
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <p className="text-xs tracking-[0.3em] uppercase mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+              Script Supervisor&rsquo;s Log
+            </p>
+            <h2 className="text-2xl" style={{ fontFamily: 'var(--font-display)' }}>Activity Log</h2>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close activity log"
+            className="text-lg leading-none px-2 py-1 rounded-sm"
+            style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', opacity: 0.6, border: '1px solid var(--rule)' }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 mb-6">
+          <span
+            className="h-1.5 w-1.5 rounded-full"
+            style={{ backgroundColor: loading ? 'var(--amber)' : syncError ? 'var(--tally)' : 'var(--ember)' }}
+            aria-hidden
+          />
+          <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', opacity: 0.6 }}>
+            {loading ? 'Syncing with GitHub…' : syncError || 'Synced from GitHub'}
+          </p>
+        </div>
+
+        {sorted.length === 0 && !loading ? (
+          <p className="text-sm" style={{ fontFamily: 'var(--font-body)', color: 'var(--paper)', opacity: 0.5 }}>
+            No activity recorded yet.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-4">
+            {sorted.map((entry) => (
+              <li key={entry.id} className="flex gap-3 pb-4" style={{ borderBottom: '1px solid var(--rule)' }}>
+                <span
+                  className="mt-1.5 h-2 w-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: LOG_DOT[entry.type] }}
+                  aria-hidden
+                />
+                <div>
+                  <p className="text-sm leading-snug" style={{ fontFamily: 'var(--font-body)', color: 'var(--paper)' }}>
+                    {entry.message}
+                  </p>
+                  <p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', opacity: 0.45 }}>
+                    {formatTimestamp(entry.timestamp)}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function ClapperIcon() {
   return (
     <svg width="88" height="88" viewBox="0 0 64 64" aria-hidden>
@@ -163,6 +281,10 @@ export default function EchoFilms() {
   const [progress, setProgress] = useState<Progress>({ currentModule: 0, currentSection: 0, lastUnlockedAt: null, completed: false });
   const [timeLeft, setTimeLeft] = useState('');
   const [alertMsg, setAlertMsg] = useState('');
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  const [showLog, setShowLog] = useState(false);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logSyncError, setLogSyncError] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -171,12 +293,67 @@ export default function EchoFilms() {
       setProgress(data);
       if (data.completed) setPage('completed');
     }
+    // Local cache first (instant, works offline) — GitHub is the source of
+    // truth and gets pulled in whenever the log panel is opened.
+    const savedLog = localStorage.getItem(LOG_KEY);
+    if (savedLog) setActivityLog(JSON.parse(savedLog));
   }, []);
 
   const saveProgress = (newData: Partial<Progress>) => {
     const updated = { ...progress, ...newData };
     setProgress(updated);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  };
+
+  const addLogEntry = (type: ActivityLogEntry['type'], message: string) => {
+    const entry: ActivityLogEntry = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type,
+      message,
+      timestamp: Date.now(),
+    };
+
+    // Optimistic local update — instant, survives if the network call fails.
+    setActivityLog((prev) => {
+      const updated = [...prev, entry];
+      localStorage.setItem(LOG_KEY, JSON.stringify(updated));
+      return updated;
+    });
+
+    // Fire-and-forget push to GitHub via the server route (token stays server-side).
+    fetch('/api/activity-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.entries) {
+          setActivityLog(data.entries);
+          localStorage.setItem(LOG_KEY, JSON.stringify(data.entries));
+        }
+      })
+      .catch(() => {
+        // Offline or GitHub unreachable — the local copy above still holds,
+        // it just hasn't synced to the repo yet.
+      });
+  };
+
+  const openActivityLog = () => {
+    setShowLog(true);
+    setLogLoading(true);
+    setLogSyncError('');
+    fetch('/api/activity-log')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.error) throw new Error(data.error);
+        setActivityLog(data.entries);
+        localStorage.setItem(LOG_KEY, JSON.stringify(data.entries));
+      })
+      .catch(() => {
+        setLogSyncError('Could not reach GitHub — showing the last synced copy.');
+      })
+      .finally(() => setLogLoading(false));
   };
 
   useEffect(() => {
@@ -289,7 +466,14 @@ export default function EchoFilms() {
                   onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--rule)')}
                 />
                 <button
-                  onClick={() => (trainingIdInput === TRAINING_ID ? setPage('welcome') : setAlertMsg('Invalid Training ID'))}
+                  onClick={() => {
+                    if (trainingIdInput === TRAINING_ID) {
+                      addLogEntry('auth', `${USER.name} signed in`);
+                      setPage('welcome');
+                    } else {
+                      setAlertMsg('Invalid Training ID');
+                    }
+                  }}
                   className="w-full py-4 rounded-sm text-base tracking-wide uppercase transition-colors"
                   style={{ backgroundColor: 'var(--ember)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}
                   onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--amber)')}
@@ -311,12 +495,24 @@ export default function EchoFilms() {
               className="min-h-screen p-8 md:p-16"
             >
               <div className="max-w-5xl mx-auto">
-                <p className="text-xs tracking-[0.3em] uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
-                  Reel Rack
-                </p>
-                <h1 className="text-4xl md:text-5xl mb-2" style={{ fontFamily: 'var(--font-display)' }}>
-                  Welcome, {USER.name}
-                </h1>
+                <div className="flex items-start justify-between gap-6 mb-2">
+                  <div>
+                    <p className="text-xs tracking-[0.3em] uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+                      Reel Rack
+                    </p>
+                    <h1 className="text-4xl md:text-5xl" style={{ fontFamily: 'var(--font-display)' }}>
+                      Welcome, {USER.name}
+                    </h1>
+                  </div>
+                  <button
+                    onClick={openActivityLog}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-sm text-xs tracking-wide uppercase flex-shrink-0"
+                    style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', border: '1px solid var(--rule)' }}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: 'var(--ember)' }} aria-hidden />
+                    Activity Log
+                  </button>
+                </div>
                 <p className="mb-14" style={{ color: 'var(--paper)', opacity: 0.65 }}>
                   Choose a reel to continue your training.
                 </p>
@@ -434,12 +630,25 @@ export default function EchoFilms() {
                   <button
                     onClick={() => {
                       if (progress.currentSection < 9) {
+                        addLogEntry(
+                          'section',
+                          `Reel ${String(progress.currentModule + 1).padStart(2, '0')} — Section ${String(progress.currentSection + 1).padStart(2, '0')}/10 completed`
+                        );
                         saveProgress({ currentSection: progress.currentSection + 1 });
                       } else if (progress.currentModule + 1 < TOTAL_MODULES) {
+                        addLogEntry(
+                          'module_completed',
+                          `Reel ${String(progress.currentModule + 1).padStart(2, '0')} completed — "${currentModuleData.title}"`
+                        );
                         saveProgress({ currentModule: progress.currentModule + 1, currentSection: 0, lastUnlockedAt: Date.now() });
                         setAlertMsg('Reel Wrapped');
                         setTimeout(() => { setAlertMsg(''); setPage('welcome'); }, 1500);
                       } else {
+                        addLogEntry(
+                          'module_completed',
+                          `Reel ${String(progress.currentModule + 1).padStart(2, '0')} completed — "${currentModuleData.title}"`
+                        );
+                        addLogEntry('training_completed', `${USER.name} completed the full training`);
                         saveProgress({ completed: true });
                         setPage('completed');
                       }
@@ -479,6 +688,17 @@ export default function EchoFilms() {
                 </p>
               </div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showLog && (
+            <ActivityLogPanel
+              log={activityLog}
+              loading={logLoading}
+              syncError={logSyncError}
+              onClose={() => setShowLog(false)}
+            />
           )}
         </AnimatePresence>
 
