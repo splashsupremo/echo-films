@@ -1,9 +1,18 @@
-// app/page.tsx
 'use client';
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Bebas_Neue, Source_Serif_4, IBM_Plex_Mono } from 'next/font/google';
 import { MODULES, TRAINING_ID, USER, TOTAL_MODULES } from './lib/config';
+
+// ---------------------------------------------------------------------------
+// Type — a condensed display face for titles/leader numerals, a warm serif
+// for the training prose itself (feels like a script page, not a SaaS card),
+// and a mono utility face for timecodes, IDs, and controls.
+// ---------------------------------------------------------------------------
+const display = Bebas_Neue({ subsets: ['latin'], weight: '400', variable: '--font-display' });
+const body = Source_Serif_4({ subsets: ['latin'], weight: ['400', '600'], variable: '--font-body' });
+const mono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-mono' });
 
 interface Progress {
   currentModule: number;
@@ -14,361 +23,485 @@ interface Progress {
 
 const STORAGE_KEY = 'echo_progress';
 
+// ---------------------------------------------------------------------------
+// Token system (CSS variables set once on the root wrapper)
+// ink     #0E0D0C  base background — raw film black
+// paper   #EDE6D8  primary text — leader/paper white
+// panel   #1C1A17  card surfaces
+// rule    #3A342C  borders, dividers, unlit states
+// ember   #FF5A1F  primary accent — countdown-leader orange
+// amber   #C98A3D  secondary accent — in-progress state
+// tally   #C22525  alerts / locked / recording dot
+// ---------------------------------------------------------------------------
+const tokens: React.CSSProperties = {
+  '--ink': '#0E0D0C',
+  '--paper': '#EDE6D8',
+  '--panel': '#1C1A17',
+  '--panel2': '#221F1B',
+  '--rule': '#3A342C',
+  '--ember': '#FF5A1F',
+  '--amber': '#C98A3D',
+  '--tally': '#C22525',
+} as React.CSSProperties;
+
+// ---------------------------------------------------------------------------
+// Sprocket strip — the perforated film edge, framing the whole viewport.
+// Pure CSS (no loops): a repeating radial-gradient punches holes out of a
+// rule-colored strip.
+// ---------------------------------------------------------------------------
+function Sprockets({ position }: { position: 'top' | 'bottom' }) {
+  return (
+    <div
+      aria-hidden
+      className={`fixed left-0 right-0 h-6 z-40 ${position === 'top' ? 'top-0' : 'bottom-0'}`}
+      style={{
+        backgroundColor: 'var(--rule)',
+        backgroundImage:
+          'radial-gradient(circle at 14px 12px, var(--ink) 5px, transparent 5.5px)',
+        backgroundSize: '28px 24px',
+        backgroundRepeat: 'repeat-x',
+      }}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Film reel — the signature element. A radial progress ring standing in for
+// a canister of wound film: empty rim (locked), partially wound (active,
+// amber), fully wound with a struck hub (done, ember).
+// ---------------------------------------------------------------------------
+function FilmReel({
+  percent,
+  state,
+  size = 56,
+}: {
+  percent: number;
+  state: 'locked' | 'active' | 'done';
+  size?: number;
+}) {
+  const r = 20;
+  const c = 2 * Math.PI * r;
+  const offset = c * (1 - Math.max(0, Math.min(100, percent)) / 100);
+  const ringColor = state === 'done' ? 'var(--ember)' : state === 'active' ? 'var(--amber)' : 'var(--rule)';
+  const hubFill = state === 'done' ? 'var(--ember)' : state === 'active' ? 'var(--ink)' : 'var(--panel)';
+
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden>
+      <circle cx="24" cy="24" r={r} fill="none" stroke="var(--rule)" strokeWidth="2.5" opacity={0.5} />
+      {[0, 72, 144, 216, 288].map((deg) => (
+        <line
+          key={deg}
+          x1="24"
+          y1="24"
+          x2={24 + r * 0.86 * Math.cos((deg * Math.PI) / 180)}
+          y2={24 + r * 0.86 * Math.sin((deg * Math.PI) / 180)}
+          stroke="var(--rule)"
+          strokeWidth="1.5"
+          opacity={0.4}
+        />
+      ))}
+      <circle
+        cx="24"
+        cy="24"
+        r={r}
+        fill="none"
+        stroke={ringColor}
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={offset}
+        transform="rotate(-90 24 24)"
+      />
+      <circle cx="24" cy="24" r="7" fill={hubFill} stroke="var(--rule)" strokeWidth="1.5" />
+      {state === 'done' && (
+        <path d="M20.5 24l2.3 2.6 5-5.8" stroke="var(--ink)" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Filmstrip progress — ten frames in a row, because ten sections is a real
+// sequence a person is moving through, frame by frame.
+// ---------------------------------------------------------------------------
+function FilmStripProgress({ total, current }: { total: number; current: number }) {
+  return (
+    <div className="flex gap-1.5" role="img" aria-label={`Section ${current + 1} of ${total}`}>
+      {Array.from({ length: total }).map((_, i) => {
+        const filled = i < current;
+        const isCurrent = i === current;
+        return (
+          <div
+            key={i}
+            className="h-6 w-4 rounded-[2px] border transition-colors duration-300"
+            style={{
+              borderColor: isCurrent ? 'var(--ember)' : filled ? 'var(--amber)' : 'var(--rule)',
+              backgroundColor: filled ? 'var(--amber)' : isCurrent ? 'var(--panel2)' : 'transparent',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function ClapperIcon() {
+  return (
+    <svg width="88" height="88" viewBox="0 0 64 64" aria-hidden>
+      <rect x="8" y="24" width="48" height="32" rx="2" fill="var(--panel)" stroke="var(--rule)" strokeWidth="2" />
+      <path d="M8 24l4-10h44l-4 10z" fill="var(--ember)" />
+      <path d="M14 24l4-10M22 24l4-10M30 24l4-10M38 24l4-10M46 24l4-10" stroke="var(--ink)" strokeWidth="2.5" />
+      <circle cx="32" cy="40" r="9" fill="none" stroke="var(--rule)" strokeWidth="2" />
+      <circle cx="32" cy="40" r="3" fill="var(--ember)" />
+    </svg>
+  );
+}
+
 export default function EchoFilms() {
   const [page, setPage] = useState<'landing' | 'auth' | 'welcome' | 'module' | 'completed'>('landing');
   const [trainingIdInput, setTrainingIdInput] = useState('');
-  const [progress, setProgress] = useState<Progress>({
-    currentModule: 0,
-    currentSection: 0,
-    lastUnlockedAt: null,
-    completed: false,
-  });
+  const [progress, setProgress] = useState<Progress>({ currentModule: 0, currentSection: 0, lastUnlockedAt: null, completed: false });
   const [timeLeft, setTimeLeft] = useState('');
-  const [showAlert, setShowAlert] = useState('');
+  const [alertMsg, setAlertMsg] = useState('');
 
-  // Load progress from localStorage
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      const parsed: Progress = JSON.parse(saved);
-      setProgress(parsed);
-      
-      if (parsed.completed) {
-        setPage('completed');
-      } else if (parsed.lastUnlockedAt) {
-        checkLockStatus(parsed);
-      } else {
-        setPage('welcome');
-      }
-    } else {
-      setPage('landing');
+      const data = JSON.parse(saved);
+      setProgress(data);
+      if (data.completed) setPage('completed');
     }
   }, []);
 
-  const saveProgress = (newProgress: Partial<Progress>) => {
-    const updated = { ...progress, ...newProgress };
+  const saveProgress = (newData: Partial<Progress>) => {
+    const updated = { ...progress, ...newData };
     setProgress(updated);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
   };
 
-  const checkLockStatus = (prog: Progress) => {
-    if (!prog.lastUnlockedAt) {
-      setPage('welcome');
-      return;
-    }
-    
-    const now = Date.now();
-    const hoursPassed = (now - prog.lastUnlockedAt) / (1000 * 60 * 60);
-    
-    if (hoursPassed >= 24) {
-      setPage('module');
-    } else {
-      setPage('welcome');
-      startCountdown(prog.lastUnlockedAt);
-    }
-  };
-
-  const startCountdown = (unlockTime: number) => {
+  useEffect(() => {
+    if (page !== 'welcome' || !progress.lastUnlockedAt) return;
     const interval = setInterval(() => {
-      const now = Date.now();
-      const remaining = unlockTime + 24 * 60 * 60 * 1000 - now;
-      
-      if (remaining <= 0) {
-        clearInterval(interval);
-        setTimeLeft('');
-        setPage('module');
-        return;
-      }
-      
-      const hours = Math.floor(remaining / (1000 * 60 * 60));
-      const minutes = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
-      
-      setTimeLeft(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
+      const remaining = progress.lastUnlockedAt! + 86400000 - Date.now();
+      if (remaining <= 0) return setTimeLeft('');
+      const h = Math.floor(remaining / 3600000).toString().padStart(2, '0');
+      const m = Math.floor((remaining % 3600000) / 60000).toString().padStart(2, '0');
+      const s = Math.floor((remaining % 60000) / 1000).toString().padStart(2, '0');
+      setTimeLeft(`${h}:${m}:${s}`);
     }, 1000);
-    
     return () => clearInterval(interval);
-  };
-
-  const handleAuth = () => {
-    if (trainingIdInput.trim() === TRAINING_ID) {
-      setPage('welcome');
-    } else {
-      setShowAlert('Access Denied. Invalid Training ID');
-      setTimeout(() => setShowAlert(''), 3000);
-    }
-  };
-
-  const startTraining = () => {
-    if (!progress.lastUnlockedAt) {
-      saveProgress({ lastUnlockedAt: Date.now() });
-    }
-    setPage('module');
-  };
-
-  const nextSection = () => {
-    const modIndex = progress.currentModule;
-    const secIndex = progress.currentSection;
-
-    if (secIndex < 9) {
-      saveProgress({ currentSection: secIndex + 1 });
-    } else {
-      // Complete module
-      const newModule = modIndex + 1;
-      
-      if (newModule >= TOTAL_MODULES) {
-        saveProgress({ completed: true });
-        setPage('completed');
-      } else {
-        saveProgress({
-          currentModule: newModule,
-          currentSection: 0,
-          lastUnlockedAt: Date.now(),
-        });
-        setShowAlert('Module Complete! Next module unlocks in 24 hours.');
-        setTimeout(() => {
-          setShowAlert('');
-          setPage('welcome');
-        }, 2000);
-      }
-    }
-  };
+  }, [progress.lastUnlockedAt, page]);
 
   const currentModuleData = MODULES[progress.currentModule];
-  const currentSectionContent = currentModuleData?.sections[progress.currentSection];
+  const currentContent = currentModuleData?.sections[progress.currentSection];
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
-      {/* Background Elements */}
-      <div className="fixed inset-0 bg-[radial-gradient(at_50%_30%,rgba(185,28,28,0.15),transparent_70%)]" />
-      
-      <AnimatePresence mode="wait">
-        {/* LANDING PAGE */}
-        {page === 'landing' && (
-          <motion.div
-            key="landing"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="min-h-screen flex flex-col items-center justify-center p-6 relative"
-          >
-            <motion.div
-              animate={{
-                scale: [1, 1.05, 1],
-                opacity: [0.6, 0.9, 0.6],
-              }}
-              transition={{ duration: 8, repeat: Infinity }}
-              className="absolute inset-0 bg-gradient-to-br from-red-900/20 via-transparent to-transparent"
-            />
-            
-            <div className="text-center z-10 max-w-2xl">
-              <motion.h1 
-                initial={{ y: 30, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                className="text-7xl md:text-8xl font-bold tracking-tighter mb-6"
-              >
-                ECHO<span className="text-red-600">.</span>
-              </motion.h1>
-              <p className="text-3xl md:text-4xl text-zinc-400 mb-4">FILMS</p>
-              <p className="text-xl text-zinc-500 mb-12">Management Training Center</p>
-              
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => setPage('auth')}
-                className="px-16 py-6 bg-red-600 hover:bg-red-700 transition-colors text-xl font-medium rounded-xl tracking-wide"
-              >
-                ENTER TRAINING ROOM
-              </motion.button>
-            </div>
-            
-            <div className="absolute bottom-12 text-zinc-600 text-sm">Premium • Cinematic • Professional</div>
-          </motion.div>
-        )}
+    <div
+      style={tokens}
+      className={`${display.variable} ${body.variable} ${mono.variable} min-h-screen`}
+    >
+      <div className="min-h-screen" style={{ backgroundColor: 'var(--ink)', color: 'var(--paper)', fontFamily: 'var(--font-body)' }}>
+        <Sprockets position="top" />
+        <Sprockets position="bottom" />
 
-        {/* AUTH PAGE */}
-        {page === 'auth' && (
-          <motion.div
-            key="auth"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="min-h-screen flex items-center justify-center p-6"
-          >
-            <div className="w-full max-w-md">
-              <div className="text-center mb-12">
-                <div className="text-red-600 text-6xl mb-4">🔒</div>
-                <h2 className="text-4xl font-semibold mb-3">Training Access</h2>
-                <p className="text-zinc-400">Enter your assigned Training ID</p>
+        <AnimatePresence mode="wait">
+          {page === 'landing' && (
+            <motion.div
+              key="landing"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4 }}
+              className="min-h-screen flex items-center justify-center px-6"
+            >
+              <div className="text-center max-w-2xl">
+                <p
+                  className="text-sm tracking-[0.35em] uppercase mb-6"
+                  style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}
+                >
+                  Production Management Academy
+                </p>
+                <h1
+                  className="text-[6.5rem] leading-[0.85] tracking-tight mb-10"
+                  style={{ fontFamily: 'var(--font-display)', color: 'var(--paper)' }}
+                >
+                  ECHO&nbsp;FILMS
+                </h1>
+                <div className="flex justify-center mb-10" aria-hidden>
+                  <div className="h-px w-24" style={{ backgroundColor: 'var(--rule)' }} />
+                </div>
+                <button
+                  onClick={() => setPage('auth')}
+                  className="px-14 py-5 text-lg tracking-wide uppercase rounded-sm transition-colors duration-200 focus:outline-none focus-visible:ring-2"
+                  style={{
+                    backgroundColor: 'var(--ember)',
+                    color: 'var(--ink)',
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 600,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--amber)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--ember)')}
+                >
+                  Enter the Academy ▸
+                </button>
               </div>
-              
-              <div className="space-y-6">
+            </motion.div>
+          )}
+
+          {page === 'auth' && (
+            <motion.div
+              key="auth"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.35 }}
+              className="min-h-screen flex items-center justify-center p-6"
+            >
+              <div
+                className="w-full max-w-md rounded-md p-10"
+                style={{ backgroundColor: 'var(--panel)', border: '1px solid var(--rule)' }}
+              >
+                <p className="text-xs tracking-[0.3em] uppercase mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+                  Scene 01 · Take 01
+                </p>
+                <h2 className="text-3xl mb-1" style={{ fontFamily: 'var(--font-display)' }}>
+                  Training Access
+                </h2>
+                <p className="text-sm mb-8" style={{ color: 'var(--paper)', opacity: 0.65 }}>
+                  Enter your Training ID to begin.
+                </p>
+
+                <label htmlFor="training-id" className="sr-only">Training ID</label>
                 <input
+                  id="training-id"
                   type="text"
                   value={trainingIdInput}
                   onChange={(e) => setTrainingIdInput(e.target.value)}
                   placeholder="ECHO201126"
-                  className="w-full bg-zinc-900 border border-zinc-700 focus:border-red-600 rounded-2xl px-8 py-6 text-xl outline-none transition-colors"
-                  onKeyDown={(e) => e.key === 'Enter' && handleAuth()}
+                  className="w-full px-5 py-4 rounded-sm text-lg mb-6 outline-none transition-colors"
+                  style={{
+                    backgroundColor: 'var(--ink)',
+                    border: '1px solid var(--rule)',
+                    color: 'var(--paper)',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                  onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--ember)')}
+                  onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--rule)')}
                 />
-                
                 <button
-                  onClick={handleAuth}
-                  className="w-full bg-red-600 hover:bg-red-700 py-6 rounded-2xl text-xl font-medium transition-colors"
+                  onClick={() => (trainingIdInput === TRAINING_ID ? setPage('welcome') : setAlertMsg('Invalid Training ID'))}
+                  className="w-full py-4 rounded-sm text-base tracking-wide uppercase transition-colors"
+                  style={{ backgroundColor: 'var(--ember)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--amber)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--ember)')}
                 >
-                  CONTINUE
+                  Verify &amp; Enter
                 </button>
               </div>
-            </div>
-          </motion.div>
-        )}
+            </motion.div>
+          )}
 
-        {/* WELCOME / DASHBOARD */}
-        {page === 'welcome' && (
-          <motion.div
-            key="welcome"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="min-h-screen p-8 flex flex-col"
-          >
-            <div className="max-w-3xl mx-auto flex-1 flex flex-col justify-center">
-              <div className="mb-16">
-                <div className="text-red-600 text-sm tracking-[4px] mb-2">WELCOME BACK</div>
-                <h1 className="text-5xl font-bold">Hello, {USER.name}</h1>
-                <p className="text-zinc-400 mt-2">{USER.email}</p>
+          {page === 'welcome' && (
+            <motion.div
+              key="welcome"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="min-h-screen p-8 md:p-16"
+            >
+              <div className="max-w-5xl mx-auto">
+                <p className="text-xs tracking-[0.3em] uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+                  Reel Rack
+                </p>
+                <h1 className="text-4xl md:text-5xl mb-2" style={{ fontFamily: 'var(--font-display)' }}>
+                  Welcome, {USER.name}
+                </h1>
+                <p className="mb-14" style={{ color: 'var(--paper)', opacity: 0.65 }}>
+                  Choose a reel to continue your training.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {MODULES.map((mod, index) => {
+                    const state: 'locked' | 'active' | 'done' =
+                      index < progress.currentModule ? 'done' : index === progress.currentModule ? 'active' : 'locked';
+                    const percent =
+                      state === 'done' ? 100 : state === 'active' ? (progress.currentSection / 10) * 100 : 0;
+
+                    return (
+                      <motion.div
+                        key={index}
+                        whileHover={state !== 'locked' ? { y: -4 } : undefined}
+                        transition={{ duration: 0.2 }}
+                        className="rounded-md p-7 flex flex-col h-full"
+                        style={{
+                          backgroundColor: 'var(--panel)',
+                          border: `1px solid ${state === 'active' ? 'var(--ember)' : 'var(--rule)'}`,
+                        }}
+                      >
+                        <div className="flex items-start justify-between mb-6">
+                          <div>
+                            <p className="text-xs tracking-[0.25em] uppercase mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)', opacity: state === 'locked' ? 0.4 : 1 }}>
+                              Reel {String(index + 1).padStart(2, '0')}
+                            </p>
+                          </div>
+                          <FilmReel percent={percent} state={state} />
+                        </div>
+
+                        <h3
+                          className="text-lg leading-snug flex-1 mb-6"
+                          style={{ opacity: state === 'locked' ? 0.45 : 1, fontFamily: 'var(--font-body)', fontWeight: 600 }}
+                        >
+                          {mod.title}
+                        </h3>
+
+                        {state === 'active' && (
+                          <button
+                            onClick={() => { if (!timeLeft) setPage('module'); }}
+                            disabled={!!timeLeft}
+                            aria-disabled={!!timeLeft}
+                            className="mt-auto w-full py-3.5 rounded-sm text-sm tracking-wide uppercase transition-colors disabled:cursor-not-allowed"
+                            style={{
+                              backgroundColor: timeLeft ? 'var(--panel2)' : 'var(--ember)',
+                              color: timeLeft ? 'var(--rule)' : 'var(--ink)',
+                              border: timeLeft ? '1px solid var(--rule)' : 'none',
+                              fontFamily: 'var(--font-mono)',
+                              fontWeight: 600,
+                            }}
+                            onMouseEnter={(e) => { if (!timeLeft) e.currentTarget.style.backgroundColor = 'var(--amber)'; }}
+                            onMouseLeave={(e) => { if (!timeLeft) e.currentTarget.style.backgroundColor = 'var(--ember)'; }}
+                          >
+                            {timeLeft ? `Locked · ${timeLeft}` : 'Continue Reel'}
+                          </button>
+                        )}
+                        {state === 'locked' && (
+                          <p className="text-xs uppercase tracking-wide" style={{ fontFamily: 'var(--font-mono)', color: 'var(--rule)' }}>
+                            Locked
+                          </p>
+                        )}
+                        {state === 'done' && (
+                          <p className="text-xs uppercase tracking-wide" style={{ fontFamily: 'var(--font-mono)', color: 'var(--ember)' }}>
+                            Wrapped
+                          </p>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
               </div>
+            </motion.div>
+          )}
 
-              <div className="bg-zinc-900/70 border border-zinc-800 rounded-3xl p-10 mb-12">
-                <div className="flex justify-between items-start mb-8">
-                  <div>
-                    <div className="uppercase text-xs tracking-widest text-zinc-500">PROGRESS</div>
-                    <div className="text-6xl font-mono mt-3">
-                      {progress.currentModule + 1} <span className="text-3xl text-zinc-500">/ 5</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-emerald-400 text-sm">MODULE {progress.currentModule + 1}</div>
+          {page === 'module' && currentModuleData && (
+            <motion.div
+              key="module"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="min-h-screen p-8 md:p-16"
+            >
+              <div className="max-w-3xl mx-auto">
+                <button
+                  onClick={() => setPage('welcome')}
+                  className="mb-10 flex items-center gap-2 text-sm transition-opacity hover:opacity-100"
+                  style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', opacity: 0.6 }}
+                >
+                  ← Back to Reel Rack
+                </button>
+
+                <div className="flex items-center justify-between mb-6">
+                  <p className="text-xs tracking-[0.25em] uppercase" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+                    Reel {String(progress.currentModule + 1).padStart(2, '0')} · Section {String(progress.currentSection + 1).padStart(2, '0')} / 10
+                  </p>
+                </div>
+
+                <FilmStripProgress total={10} current={progress.currentSection} />
+
+                <div className="rounded-md p-10 md:p-14 mt-8" style={{ backgroundColor: 'var(--panel)', border: '1px solid var(--rule)' }}>
+                  <h2 className="text-2xl mb-8" style={{ fontFamily: 'var(--font-display)', letterSpacing: '0.01em' }}>
+                    {currentModuleData.title}
+                  </h2>
+                  <div
+                    className="max-w-none text-[1.05rem] leading-[1.8]"
+                    style={{ fontFamily: 'var(--font-body)', color: 'var(--paper)', opacity: 0.92 }}
+                  >
+                    {currentContent}
                   </div>
                 </div>
 
-                {timeLeft && (
-                  <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-6 mb-8">
-                    <div className="text-sm text-zinc-400 mb-1">NEXT MODULE UNLOCKS IN</div>
-                    <div className="font-mono text-5xl text-red-500 tabular-nums">{timeLeft}</div>
-                  </div>
-                )}
+                <div className="flex justify-end mt-10">
+                  <button
+                    onClick={() => {
+                      if (progress.currentSection < 9) {
+                        saveProgress({ currentSection: progress.currentSection + 1 });
+                      } else if (progress.currentModule + 1 < TOTAL_MODULES) {
+                        saveProgress({ currentModule: progress.currentModule + 1, currentSection: 0, lastUnlockedAt: Date.now() });
+                        setAlertMsg('Reel Wrapped');
+                        setTimeout(() => { setAlertMsg(''); setPage('welcome'); }, 1500);
+                      } else {
+                        saveProgress({ completed: true });
+                        setPage('completed');
+                      }
+                    }}
+                    className="px-12 py-4 rounded-sm text-sm tracking-wide uppercase transition-colors"
+                    style={{ backgroundColor: 'var(--ember)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontWeight: 600 }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--amber)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'var(--ember)')}
+                  >
+                    {progress.currentSection === 9 ? 'Complete Reel' : 'Next Section →'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
-                <p className="text-zinc-400 leading-relaxed text-lg">
-                  Complete all 10 sections in each module. Each module takes approximately 25 minutes.<br />
-                  A new module unlocks 24 hours after completing the previous one.
+          {page === 'completed' && (
+            <motion.div
+              key="completed"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.4 }}
+              className="min-h-screen flex items-center justify-center text-center p-8"
+            >
+              <div>
+                <div className="flex justify-center mb-8">
+                  <ClapperIcon />
+                </div>
+                <p className="text-xs tracking-[0.35em] uppercase mb-4" style={{ fontFamily: 'var(--font-mono)', color: 'var(--amber)' }}>
+                  Cut.
+                </p>
+                <h1 className="text-5xl md:text-6xl mb-3" style={{ fontFamily: 'var(--font-display)' }}>
+                  That&rsquo;s a Wrap
+                </h1>
+                <p style={{ color: 'var(--paper)', opacity: 0.65, fontFamily: 'var(--font-body)' }}>
+                  Training completed, {USER.name}.
                 </p>
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-              <button
-                onClick={startTraining}
-                disabled={!!timeLeft}
-                className="w-full py-8 bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 disabled:text-zinc-500 rounded-3xl text-2xl font-medium transition-all disabled:cursor-not-allowed"
-              >
-                {timeLeft ? "MODULE LOCKED" : "BEGIN MODULE " + (progress.currentModule + 1)}
-              </button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* MODULE PAGE */}
-        {page === 'module' && currentModuleData && (
-          <motion.div
-            key="module"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="min-h-screen p-6 md:p-12 flex flex-col"
-          >
-            <div className="max-w-4xl mx-auto w-full">
-              {/* Progress Header */}
-              <div className="flex items-center justify-between mb-12 sticky top-6 z-50 bg-zinc-950/80 backdrop-blur-lg py-4">
-                <button 
-                  onClick={() => setPage('welcome')}
-                  className="flex items-center gap-3 text-zinc-400 hover:text-white transition-colors"
-                >
-                  ← BACK
-                </button>
-                
-                <div className="text-center">
-                  <div className="text-xs tracking-[3px] text-red-600">MODULE {progress.currentModule + 1}</div>
-                  <div className="text-2xl font-semibold">{currentModuleData.title}</div>
-                </div>
-                
-                <div className="font-mono text-sm text-zinc-500">
-                  {progress.currentSection + 1} / 10
-                </div>
-              </div>
-
-              {/* Content */}
-              <motion.div
-                key={progress.currentSection}
-                initial={{ opacity: 0, y: 40 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="prose prose-zinc prose-invert max-w-none bg-zinc-900 border border-zinc-800 rounded-3xl p-12 md:p-16 leading-relaxed text-lg"
-              >
-                <h3 className="text-red-500 text-2xl mb-10 font-medium">
-                  Section {progress.currentSection + 1}: {currentModuleData.title.split(': ')[1] || ''}
-                </h3>
-                <div className="whitespace-pre-line text-zinc-300">
-                  {currentSectionContent}
-                </div>
-              </motion.div>
-
-              {/* Next Button */}
-              <div className="mt-12 flex justify-end">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={nextSection}
-                  className="px-20 py-7 bg-red-600 hover:bg-red-700 rounded-2xl text-xl font-medium flex items-center gap-4 group"
-                >
-                  {progress.currentSection < 9 ? 'NEXT SECTION' : 'COMPLETE MODULE'}
-                  <span className="group-hover:translate-x-1 transition">→</span>
-                </motion.button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        {/* COMPLETED PAGE */}
-        {page === 'completed' && (
-          <motion.div
-            key="completed"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="min-h-screen flex items-center justify-center p-6"
-          >
-            <div className="text-center max-w-lg">
-              <div className="text-8xl mb-8">✅</div>
-              <h1 className="text-6xl font-bold mb-6">Training Completed</h1>
-              <p className="text-2xl text-zinc-400 mb-16">
-                You have successfully finished all 5 modules of the Echo Films Production Management Training Program.
-              </p>
-              <div className="bg-zinc-900 border border-zinc-700 rounded-3xl p-10 text-left text-zinc-300">
-                Further instructions and next steps will be communicated by HR.<br /><br />
-                Thank you for your dedication to excellence in film production management.
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Global Alert */}
-      <AnimatePresence>
-        {showAlert && (
-          <motion.div
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 50 }}
-            className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-zinc-900 border border-red-600 text-red-400 px-10 py-5 rounded-2xl shadow-2xl z-50"
-          >
-            {showAlert}
-          </motion.div>
-        )}
-      </AnimatePresence>
+        <AnimatePresence>
+          {alertMsg && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-6 py-3.5 rounded-sm"
+              style={{ backgroundColor: 'var(--panel)', border: '1px solid var(--tally)' }}
+            >
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ backgroundColor: 'var(--tally)' }}
+              />
+              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--paper)', fontSize: '0.85rem', letterSpacing: '0.02em' }}>
+                {alertMsg}
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }

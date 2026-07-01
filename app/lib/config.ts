@@ -1,8 +1,8 @@
 // lib/config.ts
-export const TRAINING_ID = "ECHO201126";
+export const TRAINING_ID = "ECHO201123";
 
 export const USER = {
-  name: "K with McGee",
+  name: "Rocky McGee",
   email: "rockymcgee53@gmail.com"
 };
 
